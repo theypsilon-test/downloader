@@ -28,6 +28,7 @@ from pathlib import Path
 from downloader.config import AllowDelete
 from downloader.constants import K_ALLOW_DELETE, K_BASE_PATH
 from downloader.other import ClosableValue
+import zipfile
 
 
 class FileSystemFactory:
@@ -315,24 +316,19 @@ class _FileSystem(FileSystem):
 
     def save_json_on_zip(self, db, path):
         json_name = Path(path).stem
-        json_path = '/tmp/%s' % json_name
-        with open(json_path, 'w') as f:
-            json.dump(db, f)
-
         zip_path = Path(self._path(path)).absolute()
 
-        _run_successfully('cd /tmp/ && zip -qr %s %s' % (zip_path, json_name), self._logger)
-
-        self._unlink(json_path, False)
+        with zipfile.ZipFile(zip_path, 'w') as zipf:
+            zipf.writestr(json_name, json.dumps(db))
 
     def save_json(self, db, path):
         with open(self._path(path), 'w') as f:
             json.dump(db, f)
 
     def unzip_contents(self, file, path, contained_files):
-        result = subprocess.run(['unzip', '-q', '-o', self._path(file), '-d', self._path(path)], shell=False, stderr=subprocess.STDOUT)
-        if result.returncode != 0:
-            raise Exception("Could not unzip %s: %s" % (file, result.returncode))
+        with zipfile.ZipFile(self._path(file), 'r') as zipf:
+            zipf.extractall(self._path(path))
+
         self._unlink(self._path(file), False)
 
     def _unlink(self, path, verbose):
@@ -374,35 +370,14 @@ def absolute_parent_folder(absolute_path):
 
 
 def _load_json_from_zip(path):
-    json_str = _run_stdout("unzip -p %s" % path)
-    return json.loads(json_str)
+    with zipfile.ZipFile(path) as jsonzipf:
+        namelist = jsonzipf.namelist()
+        if len(namelist) != 1:
+            raise Exception('Could not load "%s", because it has %s elements!' % (path, len(namelist)))
+        with jsonzipf.open(namelist[0]) as store_json_file:
+            return json.loads(store_json_file.read())
 
 
 def _load_json(file_path):
     with open(file_path, "r") as f:
         return json.loads(f.read())
-
-
-def _run_successfully(command, logger):
-    result = subprocess.run(command, shell=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-
-    stdout = result.stdout.decode()
-    stderr = result.stderr.decode()
-    if stdout.strip():
-        logger.print(stdout)
-
-    if stderr.strip():
-        logger.print(stderr)
-
-    if result.returncode != 0:
-        raise Exception("subprocess.run %s Return Code was '%d'" % (command, result.returncode))
-
-
-def _run_stdout(command):
-    result = subprocess.run(command, shell=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-
-    if result.returncode != 0:
-        raise Exception("subprocess.run %s Return Code was '%d'" % (command, result.returncode)
-                        + '\n' + result.stdout.decode() + '\n' + result.stderr.decode())
-
-    return result.stdout.decode()

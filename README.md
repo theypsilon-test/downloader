@@ -55,11 +55,6 @@ allow_reboot = 1
 ;   false -> Doesn't update Linux.
 update_linux = true
 
-; parallel_update options:
-;   true -> Tries to download more than one file simultaneously.
-;   false -> Will only download one file at a time.
-parallel_update = true
-
 ; downloader_timeout: Can be tweaked to increase the timeout time in seconds
 ;   It is useful to increase this value for users with slow connections.
 downloader_timeout = 300

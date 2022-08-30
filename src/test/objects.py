@@ -21,7 +21,7 @@ from pathlib import Path
 
 from downloader.config import default_config
 from downloader.constants import DISTRIBUTION_MISTER_DB_ID, DISTRIBUTION_MISTER_DB_URL, FILE_MiSTer_new, K_BASE_PATH, \
-    K_PARALLEL_UPDATE, K_UPDATE_LINUX, K_DOWNLOADER_SIZE_MB_LIMIT, K_DOWNLOADER_PROCESS_LIMIT, K_DOWNLOADER_TIMEOUT, \
+    K_UPDATE_LINUX, K_DOWNLOADER_SIZE_MB_LIMIT, K_DOWNLOADER_PROCESS_LIMIT, K_DOWNLOADER_TIMEOUT, \
     K_DOWNLOADER_RETRIES, K_FILTER, K_DATABASES, KENV_DEFAULT_DB_URL, KENV_DEFAULT_DB_ID, KENV_DEFAULT_BASE_PATH, \
     KENV_ALLOW_REBOOT, KENV_DEBUG, \
     MEDIA_FAT, K_BASE_SYSTEM_PATH, K_CONFIG_PATH, K_ZIP_FILE_COUNT_THRESHOLD, K_STORAGE_PRIORITY, MEDIA_USB0, \
@@ -345,9 +345,8 @@ def raw_db_wrong_descr():
     }
 
 
-def db_options(kind=None, base_path=None, parallel_update=None, update_linux=None, downloader_size_mb_limit=None, downloader_process_limit=None, downloader_timeout=None, downloader_retries=None, download_filter=None):
+def db_options(kind=None, base_path=None, update_linux=None, downloader_size_mb_limit=None, downloader_process_limit=None, downloader_timeout=None, downloader_retries=None, download_filter=None):
     raw_db_options = {
-        K_PARALLEL_UPDATE: False if parallel_update is None else parallel_update,
         K_UPDATE_LINUX: False if update_linux is None else update_linux,
         K_DOWNLOADER_SIZE_MB_LIMIT: 5 if downloader_size_mb_limit is None else downloader_size_mb_limit,
         K_DOWNLOADER_PROCESS_LIMIT: 3 if downloader_process_limit is None else downloader_process_limit,

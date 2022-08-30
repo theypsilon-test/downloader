@@ -15,10 +15,9 @@
 
 # You can download the latest version of this tool from:
 # https://github.com/MiSTer-devel/Downloader_MiSTer
-
 from typing import List
 
-from downloader.file_downloader import CurlDownloaderAbstract, FileDownloaderFactory as ProductionFileDownloaderFactory
+from downloader.file_downloader import CurlDownloaderAbstract, FileDownloaderFactory as ProductionFileDownloaderFactory, LowLevelFileDownloaderFactory, LowLevelFileDownloader, HighLevelFileDownloader
 from downloader.local_repository import LocalRepository as ProductionLocalRepository
 from test.fake_target_path_repository import TargetPathRepository
 from test.fake_store_migrator import StoreMigrator
@@ -28,7 +27,73 @@ from test.fake_file_system_factory import FileSystemFactory
 from test.fake_logger import NoLogger
 
 
-class _FileDownloaderWithFakeFileSystem(CurlDownloaderAbstract):
+class FakeLowLevelFileDownloaderFactory(LowLevelFileDownloaderFactory):
+    def __init__(self, file_system, network_state, file_system_state, target_path_repository):
+        self._file_system_state = file_system_state
+        self._file_system = file_system
+        self._target_path_repository = target_path_repository
+        self._network_state = network_state
+
+    def create_low_level_file_downloader(self):
+        return _FakeLowLevelFileDownloader(self._file_system, self._network_state, self._file_system_state, self._target_path_repository)
+
+
+class _FakeLowLevelFileDownloader(LowLevelFileDownloader):
+    def __init__(self, file_system, network_state, file_system_state, target_path_repository):
+        self._file_system_state = file_system_state
+        self._file_system = file_system
+        self._target_path_repository = target_path_repository
+        self._network_state = network_state
+        self._network_errors = []
+        self._downloaded_files = []
+
+    def fetch(self, files_to_download):
+        for file_description, file_path, target_path in files_to_download:
+            self._download(file_path, target_path, file_description)
+
+    def _download(self, file_path, target_path, file_description):
+        failing_path = None
+        for path in self._network_state.remote_failures:
+            if not path:
+                continue
+            if file_path in path:
+                failing_path = path
+
+        if failing_path is None:
+            failing_path = failing_path
+            self._network_state.remote_failures[failing_path] = 0
+
+        self._network_state.remote_failures[failing_path] -= 1
+        if self._network_state.remote_failures[failing_path] > 0:
+            self._network_errors.append(failing_path)
+            return
+
+        if file_path in self._network_state.storing_problems:
+            self._network_errors.append(file_path)
+            return
+
+        if file_path in self._network_state.remote_files:
+            if file_description['hash'] != self._network_state.remote_files[file_path]['hash']:
+                self._network_errors.append(file_path)
+                return
+
+            file_description = self._network_state.remote_files[file_path]
+
+        self._file_system_state.add_full_file_path(
+            target_path,
+            self._file_system_state.fix_description(target_path, file_description)
+        )
+
+        self._downloaded_files.append(file_path)
+
+    def network_errors(self):
+        return self._network_errors
+
+    def downloaded_files(self):
+        return self._downloaded_files
+
+
+class _FakeCurlDownloaderWithFakeFileSystem(CurlDownloaderAbstract):
     def __init__(self, config, file_system, local_repository, network_state, file_system_state, target_path_repository):
         self._file_system_state = file_system_state
         self._file_system = file_system
@@ -76,7 +141,7 @@ class _FileDownloaderWithFakeFileSystem(CurlDownloaderAbstract):
         return self._run_files
 
 
-class _FileDownloaderWithRealFileSystem(CurlDownloaderAbstract):
+class _FakeCurlDownloaderWithRealFileSystem(CurlDownloaderAbstract):
     def __init__(self, config, file_system, local_repository, target_path_repository):
         self._file_system = file_system
         self._local_repository = local_repository
@@ -107,9 +172,10 @@ class FileDownloaderFactory(ProductionFileDownloaderFactory):
         local_repository = self._local_repository if self._local_repository is not None else ProductionLocalRepository(config, NoLogger(), file_system, StoreMigrator(), external_drives_repository)
         target_path_repository = TargetPathRepository(config, file_system)
         if self._is_fake_file_system:
-            return _FileDownloaderWithFakeFileSystem(config, file_system, local_repository, self._network_state, self._file_system_factory._state, target_path_repository)
+            low_level_factory = FakeLowLevelFileDownloaderFactory(file_system, self._network_state, self._file_system_factory._state, target_path_repository)
+            return HighLevelFileDownloader(hash_check, config, file_system, target_path_repository, low_level_factory, NoLogger())
         else:
-            return _FileDownloaderWithRealFileSystem(config, file_system, local_repository, target_path_repository)
+            return _FakeCurlDownloaderWithRealFileSystem(config, file_system, local_repository, target_path_repository)
 
     @staticmethod
     def from_implicit_inputs(implicit_inputs: ImporterImplicitInputs):
