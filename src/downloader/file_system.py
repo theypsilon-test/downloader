@@ -20,7 +20,6 @@ import os
 import hashlib
 import shutil
 import json
-import subprocess
 import tempfile
 import re
 from abc import ABC, abstractmethod
