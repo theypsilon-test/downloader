@@ -46,3 +46,7 @@ Open the command prompt, and type `python3 --version` to find out.
 ```sh
 python3 downloader_pc_launcher.py
 ```
+
+## Incompatibilities
+
+The PC Launcher is not compatible with `downloader.ini` files that have custom `base_path` or `storage_priority` fields. These fields are only meant to be used within MiSTer and don't make sense outside it, so the program will not proceed when it detects them.
