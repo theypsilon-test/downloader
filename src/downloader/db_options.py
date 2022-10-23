@@ -81,6 +81,9 @@ class DbOptions:
     def items(self):
         return self._props.items()
 
+    def unwrap_props(self):
+        return self._props
+
     def apply_to_config(self, config):
         config.update(self._props)
 

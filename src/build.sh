@@ -4,7 +4,7 @@
 set -euo pipefail
 
 TEMP_ZIP1="$(mktemp -u).zip"
-TEMP_ZIP2="${ZIP_FILE:-$(mktemp -u).zip}"
+DOWNLOADER_ZIP="downloader.zip"
 BIN="/tmp/dont_download.zip"
 UUDECODE_CMD=$({ [[ "${MISTER:-false}" == "false" ]] && [[ "$(uname -s)" == "Darwin" ]] ; } && echo "uudecode -p" || echo "uudecode -o -")
 EXPORTS="export COMMIT=$(git rev-parse --short HEAD)"
@@ -23,8 +23,8 @@ find downloader -type f -iname "*.py" -print0 | while IFS= read -r -d '' file ; 
 pin_metadata __main__.py
 zip -q -0 -D -X -A -r "${TEMP_ZIP1}" __main__.py downloader -x "*/__pycache__/*"
 pin_metadata "${TEMP_ZIP1}"
-echo '#!/usr/bin/env python3' | cat - "${TEMP_ZIP1}" > "${TEMP_ZIP2}"
-pin_metadata "${TEMP_ZIP2}"
+echo '#!/usr/bin/env python3' | cat - "${TEMP_ZIP1}" > "${DOWNLOADER_ZIP}"
+pin_metadata "${DOWNLOADER_ZIP}"
 rm "${TEMP_ZIP1}"
 cd ..
 
@@ -39,5 +39,5 @@ chmod a+x "${BIN}"
 exit 0
 EOF
 
-uuencode - < <(xzcat -z < "${TEMP_ZIP2}")
-#rm "${TEMP_ZIP2}" > /dev/null 2>&1 || true
+uuencode - < <(xzcat -z < "${DOWNLOADER_ZIP}")
+

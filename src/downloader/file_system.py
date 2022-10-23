@@ -30,6 +30,9 @@ from downloader.other import ClosableValue
 import zipfile
 
 
+is_windows = os.name == 'nt'
+
+
 class FileSystemFactory:
     def __init__(self, config, path_dictionary, logger):
         self._config = config
@@ -46,10 +49,6 @@ class FileSystemFactory:
 
 
 class FileSystem(ABC):
-
-    @abstractmethod
-    def temp_file(self):
-        """interface"""
 
     @abstractmethod
     def unique_temp_filename(self):
@@ -154,9 +153,6 @@ class _FileSystem(FileSystem):
         self._logger = logger
         self._unique_temp_filenames = unique_temp_filenames
 
-    def temp_file(self):
-        return tempfile.NamedTemporaryFile(prefix='temp_file')
-
     def unique_temp_filename(self):
         name = None
         while name in self._unique_temp_filenames:
@@ -206,7 +202,10 @@ class _FileSystem(FileSystem):
         return self._makedirs(self._parent_folder(path))
 
     def _parent_folder(self, path):
-        return absolute_parent_folder(self._path(path))
+        result = absolute_parent_folder(self._path(path))
+        if is_windows:
+            result = self._path(result)
+        return result
 
     def _makedirs(self, target):
         try:
@@ -309,7 +308,7 @@ class _FileSystem(FileSystem):
         if suffix == '.json':
             return _load_json(path)
         elif suffix == '.zip':
-            return _load_json_from_zip(path)
+            return load_json_from_zip(path)
         else:
             raise Exception('File type "%s" not supported' % suffix)
 
@@ -343,11 +342,15 @@ class _FileSystem(FileSystem):
         if path[0] == '/':
             return path
 
-        path_lower = path.lower()
-        if path_lower in self._path_dictionary:
-            return '%s/%s' % (self._path_dictionary[path_lower], path)
+        if is_windows and len(path) > 2 and path[1:2] == ':\\':
+            return path
 
-        return '%s/%s' % (self._config[K_BASE_PATH], path)
+        path_lower = path.lower()
+
+        if path_lower in self._path_dictionary:
+            return os.path.join(self._path_dictionary[path_lower], path)
+
+        return os.path.join(self._config[K_BASE_PATH], path)
 
 
 class InvalidFileResolution(Exception):
@@ -368,7 +371,7 @@ def absolute_parent_folder(absolute_path):
     return str(Path(absolute_path).parent)
 
 
-def _load_json_from_zip(path):
+def load_json_from_zip(path):
     with zipfile.ZipFile(path) as jsonzipf:
         namelist = jsonzipf.namelist()
         if len(namelist) != 1:

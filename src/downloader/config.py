@@ -32,7 +32,8 @@ from downloader.constants import FILE_downloader_ini, K_BASE_PATH, K_BASE_SYSTEM
     KENV_DEFAULT_BASE_PATH, KENV_ALLOW_REBOOT, KENV_DEFAULT_DB_URL, KENV_DEFAULT_DB_ID, KENV_DEBUG, K_OPTIONS, \
     MEDIA_FAT, K_DEBUG, K_CURL_SSL, KENV_CURL_SSL, KENV_UPDATE_LINUX, KENV_FAIL_ON_FILE_ERROR, KENV_COMMIT, \
     K_FAIL_ON_FILE_ERROR, K_COMMIT, K_UPDATE_LINUX_ENVIRONMENT, K_DEFAULT_DB_ID, DISTRIBUTION_MISTER_DB_ID, \
-    K_START_TIME, KENV_LOGFILE, K_LOGFILE, K_DOWNLOADER_OLD_IMPLEMENTATION, K_DOWNLOADER_THREADS_LIMIT
+    K_START_TIME, KENV_LOGFILE, K_LOGFILE, K_DOWNLOADER_OLD_IMPLEMENTATION, K_DOWNLOADER_THREADS_LIMIT, \
+    KENV_PC_LAUNCHER, K_IS_PC_LAUNCHER
 from downloader.db_options import DbOptionsKind, DbOptions, DbOptionsValidationException
 from downloader.ini_parser import IniParser
 
@@ -76,7 +77,7 @@ def default_config():
         K_UPDATE_LINUX: True,
         K_DOWNLOADER_SIZE_MB_LIMIT: 100,
         K_DOWNLOADER_PROCESS_LIMIT: 300,
-        K_DOWNLOADER_THREADS_LIMIT: 100,
+        K_DOWNLOADER_THREADS_LIMIT: 20,
         K_DOWNLOADER_TIMEOUT: 300,
         K_DOWNLOADER_RETRIES: 3,
         K_DOWNLOADER_OLD_IMPLEMENTATION: False,
@@ -87,7 +88,8 @@ def default_config():
         K_DEBUG: False,
         K_DEFAULT_DB_ID: DISTRIBUTION_MISTER_DB_ID,
         K_START_TIME: 0,
-        K_LOGFILE: None
+        K_LOGFILE: None,
+        K_IS_PC_LAUNCHER: False
     }
 
 
@@ -97,6 +99,9 @@ class ConfigReader:
         self._env = env
 
     def calculate_config_path(self, current_working_dir):
+        if self._env[KENV_PC_LAUNCHER] is not None:
+            return str(Path(self._env[KENV_PC_LAUNCHER]).with_name('downloader.ini')).replace('\\', '/')
+
         ini_path = self._env.get(KENV_DOWNLOADER_INI_PATH, None)
         if ini_path is not None:
             return ini_path
@@ -105,11 +110,11 @@ class ConfigReader:
         if original_executable is None:
             return FILE_downloader_ini
 
-        executable_path = PurePosixPath(original_executable)
+        executable_path = Path(original_executable)
 
         if str(executable_path.parent) == '.':
-            executable_path = PurePosixPath(current_working_dir) / executable_path
-            original_executable = str(executable_path)
+            executable_path = Path(current_working_dir) / executable_path
+            original_executable = str(executable_path).replace('\\', '/')
 
         list_of_parents = [str(p.name) for p in reversed(executable_path.parents) if
                            p.name.lower() != 'scripts' and p.name != '']
@@ -119,13 +124,17 @@ class ConfigReader:
         else:
             parents = '/'.join(list_of_parents) + '/'
 
-        return ('/' if original_executable[0] == '/' else './') + parents + executable_path.stem + '.ini'
+        result = ('/' if original_executable[0] in '/' else './') + parents + executable_path.stem + '.ini'
+
+        return result.replace('/update.ini', '/downloader.ini')
 
     def read_config(self, config_path):
         self._logger.print("Reading file: %s" % config_path)
 
         result = default_config()
         result[K_DEBUG] = self._env[KENV_DEBUG] == 'true'
+        if result[K_DEBUG]:
+            result[K_VERBOSE] = True
 
         if self._env[KENV_DEFAULT_BASE_PATH] is not None:
             result[K_BASE_PATH] = self._env[KENV_DEFAULT_BASE_PATH]
@@ -164,6 +173,36 @@ class ConfigReader:
         result[K_CONFIG_PATH] = config_path
         result[K_LOGFILE] = self._env[KENV_LOGFILE]
 
+        if self._env[KENV_PC_LAUNCHER] is not None:
+            result[K_IS_PC_LAUNCHER] = True
+            default_values = default_config()
+            launcher_path = Path(self._env[KENV_PC_LAUNCHER])
+            if result[K_BASE_PATH] != default_values[K_BASE_PATH]:
+                self._abort_pc_launcher_wrong_paths('base', 'base_path', 'MiSTer')
+
+            result[K_BASE_PATH] = str(launcher_path.parent)
+
+            if result[K_BASE_SYSTEM_PATH] != default_values[K_BASE_SYSTEM_PATH]:
+                self._abort_pc_launcher_wrong_paths('base', 'base_system_path', 'MiSTer')
+
+            result[K_BASE_SYSTEM_PATH] = str(launcher_path.parent)
+            for section, db in result[K_DATABASES].items():
+                if K_OPTIONS in db and K_BASE_PATH in db[K_OPTIONS].unwrap_props():
+                    section_props = db[K_OPTIONS].unwrap_props()
+                    if section_props[K_BASE_PATH] != default_values[K_BASE_PATH]:
+                        self._abort_pc_launcher_wrong_paths('base', 'base_path', section)
+
+                    section_props[K_BASE_PATH] = str(launcher_path.parent)
+
+            if result[K_STORAGE_PRIORITY] != default_values[K_STORAGE_PRIORITY] and result[K_STORAGE_PRIORITY] != 'off':
+                self._abort_pc_launcher_wrong_paths('external', 'storage_priority', 'MiSTer')
+
+            result[K_STORAGE_PRIORITY] = 'off'
+            result[K_ALLOW_REBOOT] = AllowReboot.NEVER
+            result[K_UPDATE_LINUX] = False
+            result[K_LOGFILE] = str(launcher_path.with_suffix('.log'))
+            result[K_CURL_SSL] = ''
+
         self._logger.configure(result)
 
         self._logger.debug('env: ' + json.dumps(self._env, indent=4))
@@ -172,6 +211,12 @@ class ConfigReader:
         result[K_CONFIG_PATH] = Path(result[K_CONFIG_PATH])
 
         return result
+
+    @staticmethod
+    def _abort_pc_launcher_wrong_paths(path_kind, path_variable, section):
+        print('Can not run the PC Launcher with custom "%s" under the [%s] section of the downloader.ini file.' % (path_variable, section))
+        print('PC Launcher and custom %s paths are not possible simultaneously.' % path_kind)
+        exit(1)
 
     def _load_ini_config(self, config_path):
         ini_config = configparser.ConfigParser(inline_comment_prefixes=(';', '#'))

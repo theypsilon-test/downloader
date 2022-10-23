@@ -15,7 +15,6 @@
 
 # You can download the latest version of this tool from:
 # https://github.com/MiSTer-devel/Downloader_MiSTer
-import multiprocessing
 import queue
 import shlex
 import ssl
@@ -23,9 +22,9 @@ import subprocess
 import sys
 import time
 from abc import ABC, abstractmethod
-from multiprocessing import Process
 from shutil import copyfileobj
 from threading import Thread
+from typing import Tuple, Union
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -59,18 +58,14 @@ class _FileDownloaderFactoryImpl(FileDownloaderFactory):
         file_system = self._file_system_factory.create_for_config(config)
         target_path_repository = TargetPathRepository(config, file_system)
         if config[K_DOWNLOADER_OLD_IMPLEMENTATION]:
-            self._logger('Using old downloader implementation...')
+            self._logger.print('Using old downloader implementation...')
             if parallel_update:
                 return _CurlCustomParallelDownloader(config, file_system, self._local_repository, logger, hash_check, target_path_repository)
             else:
                 return _CurlSerialDownloader(config, file_system, self._local_repository, logger, hash_check, target_path_repository)
         else:
-            if parallel_update:
-                low_level_factory = _LowLevelMultiThreadingFileDownloaderFactory(config, self._waiter, logger)
-                low_level_factory = _LowLevelMultiProcessingFileDownloaderFactory(config, self._waiter, logger)
-            else:
-                low_level_factory = _LowLevelSingleThreadingFileDownloaderFactory(config, logger)
-
+            thread_limit = config[K_DOWNLOADER_THREADS_LIMIT] if parallel_update else 1
+            low_level_factory = _LowLevelMultiThreadingFileDownloaderFactory(thread_limit, config, self._waiter, logger)
             return HighLevelFileDownloader(hash_check, config, file_system, target_path_repository, low_level_factory, logger)
 
 
@@ -105,7 +100,7 @@ class FileDownloader(ABC):
 
 
 class LowLevelFileDownloader(ABC):
-    def fetch(self, files_to_download):
+    def fetch(self, files_to_download, paths):
         """"files_to_download is a dictionary with file_path as keys and file_description as values"""
 
     def network_errors(self):
@@ -116,11 +111,16 @@ class LowLevelFileDownloader(ABC):
 
 
 class LowLevelFileDownloaderFactory(ABC):
-    def create_low_level_file_downloader(self):
+    def create_low_level_file_downloader(self, high_level):
         """"returns instance of LowLevelFileDownloader"""
 
 
-class HighLevelFileDownloader(FileDownloader):
+class DownloadValidator(ABC):
+    def validate_download(self, file_path: str, file_hash: str) -> Tuple[int, Union[str, Tuple[str, str]]]:
+        """Validates that the downloaded file is correctly installed and moves it if necessary. Returned int is 1 if validation was correct."""
+
+
+class HighLevelFileDownloader(FileDownloader, DownloadValidator):
     def __init__(self, hash_check, config, file_system, target_path_repository, low_level_file_downloader_factory, logger):
         self._hash_check = hash_check
         self._file_system = file_system
@@ -177,7 +177,7 @@ class HighLevelFileDownloader(FileDownloader):
 
         self._logger.print("Downloading %d files:" % len(self._queued_files))
 
-        low_level = self._low_level_file_downloader_factory.create_low_level_file_downloader()
+        low_level = self._low_level_file_downloader_factory.create_low_level_file_downloader(self)
 
         files_to_download = []
         skip_files = []
@@ -199,50 +199,41 @@ class HighLevelFileDownloader(FileDownloader):
 
             self._file_system.make_dirs_parent(file_path)
             target_path = self._target_path_repository.create_target(file_path, file_description)
-            files_to_download.append((file_description, file_path, self._file_system.download_target_path(target_path)))
+            files_to_download.append((file_path, self._file_system.download_target_path(target_path)))
             self._run_files.append(file_path)
 
         for file_path in skip_files:
             self._correct_files.append(file_path)
             self._queued_files.pop(file_path)
 
-        low_level.fetch(files_to_download)
+        low_level.fetch(files_to_download, self._queued_files)
 
-        bad_files = self._check_downloaded_files(low_level.downloaded_files())
+        self._check_downloaded_files(low_level.downloaded_files())
 
-        return low_level.network_errors() + bad_files
+        return low_level.network_errors()
+
+    def validate_download(self, file_path: str, file_hash: str) -> Tuple[int, Union[str, Tuple[str, str]]]:
+        target_path = self._target_path_repository.access_target(file_path)
+        if not self._file_system.is_file(target_path):
+            return 2, (file_path, 'Missing %s' % file_path)
+
+        path_hash = self._file_system.hash(target_path)
+        if self._hash_check and path_hash != file_hash:
+            self._target_path_repository.clean_target(file_path)
+            return 2, (file_path, 'Bad hash on %s (%s != %s)' % (file_path, file_hash, path_hash))
+
+        self._target_path_repository.finish_target(file_path)
+        self._logger.debug('+', end='', flush=True)
+
+        return 1, file_path
 
     def _check_downloaded_files(self, files):
-        if len(files) == 0:
-            return []
-
-        self._logger.print()
-        self._logger.print('Checking hashes...')
-
-        bad_files = _DownloadErrors(self._logger)
-
         for path in files:
-            if not self._file_system.is_file(self._target_path_repository.access_target(path)):
-                bad_files.add_debug_report(path, 'Missing %s' % path)
-                continue
-
-            path_hash = self._file_system.hash(self._target_path_repository.access_target(path))
-            if self._hash_check and path_hash != self._queued_files[path]['hash']:
-                bad_files.add_debug_report(path, 'Bad hash on %s (%s != %s)' % (path, self._queued_files[path]['hash'], path_hash))
-                self._target_path_repository.clean_target(path)
-                continue
-
-            self._target_path_repository.finish_target(path)
-            self._logger.print('+', end='', flush=True)
             self._correct_files.append(path)
             if self._queued_files[path].get('reboot', False):
                 self._needs_reboot = True
 
             self._queued_files.pop(path)
-
-        self._logger.print()
-
-        return bad_files.list()
 
     def errors(self):
         return self._errors
@@ -255,15 +246,6 @@ class HighLevelFileDownloader(FileDownloader):
 
     def run_files(self):
         return self._run_files
-
-
-class _LowLevelSingleThreadingFileDownloaderFactory(LowLevelFileDownloaderFactory):
-    def __init__(self, config, logger):
-        self._config = config
-        self._logger = logger
-
-    def create_low_level_file_downloader(self):
-        return _LowLevelSingleThreadingFileDownloader(self._config, context_from_curl_ssl(self._config[K_CURL_SSL]), self._logger)
 
 
 def context_from_curl_ssl(curl_ssl):
@@ -279,68 +261,44 @@ def context_from_curl_ssl(curl_ssl):
     return context
 
 
-class _LowLevelSingleThreadingFileDownloader(LowLevelFileDownloader):
-    def __init__(self, config, context, logger):
-        self._config = config
-        self._context = context
-        self._logger = logger
-        self._network_errors = _DownloadErrors(self._logger)
-        self._downloaded_files = []
-
-    def fetch(self, files_to_download):
-        for description, path, target in files_to_download:
-            self._logger.print(path)
-            try:
-                with urlopen(description['url'], timeout=self._config[K_DOWNLOADER_TIMEOUT], context=self._context) as in_stream, open(target, 'wb') as out_file:
-                    if in_stream.status == 200:
-                        copyfileobj(in_stream, out_file)
-                    else:
-                        self._network_errors.add_debug_report(path, 'Bad http status! %s: %s' % (path, in_stream.status))
-
-            except URLError as e:
-                self._network_errors.add_debug_report(path, 'HTTP error! %s: %s' % (path, e.reason))
-
-            self._downloaded_files.append(path)
-
-    def network_errors(self):
-        return self._network_errors.list()
-
-    def downloaded_files(self):
-        return self._downloaded_files
-
-
 class _LowLevelMultiThreadingFileDownloaderFactory(LowLevelFileDownloaderFactory):
-    def __init__(self, config, waiter, logger):
+    def __init__(self, threads_limit, config, waiter, logger):
+        self._threads_limit = threads_limit
         self._config = config
         self._waiter = waiter
         self._logger = logger
 
-    def create_low_level_file_downloader(self):
-        return _LowLevelMultiThreadingFileDownloader(self._config, context_from_curl_ssl(self._config[K_CURL_SSL]), self._waiter, self._logger)
+    def create_low_level_file_downloader(self, download_validator):
+        return _LowLevelMultiThreadingFileDownloader(self._threads_limit, self._config, context_from_curl_ssl(self._config[K_CURL_SSL]), self._waiter, self._logger, download_validator)
 
 
 class _LowLevelMultiThreadingFileDownloader(LowLevelFileDownloader):
-    def __init__(self, config, context, waiter, logger):
+    def __init__(self, threads_limit, config, context, waiter, logger, download_validator):
+        self._threads_limit = threads_limit
         self._config = config
         self._context = context
         self._waiter = waiter
         self._logger = logger
+        self._download_validator = download_validator
         self._network_errors = _DownloadErrors(self._logger)
         self._downloaded_files = []
+        self._pending_notifications = []
         self._endl_pending = False
 
-    def fetch(self, files_to_download):
+    def fetch(self, files_to_download, descriptions):
         job_queue = queue.Queue()
         notify_queue = queue.Queue()
-        for description, path, target in files_to_download:
-            job_queue.put((description, path, target), False)
+        for path, target in files_to_download:
+            job_queue.put((descriptions[path]['url'], path, target), False)
 
-        threads = [Thread(target=self._thread_worker_q, args=(job_queue, notify_queue)) for _ in range(min(self._config[K_DOWNLOADER_THREADS_LIMIT], len(files_to_download)))]
+        threads = [Thread(target=self._thread_worker, args=(job_queue, notify_queue)) for _ in range(min(self._threads_limit, len(files_to_download)))]
         for thread in threads:
             thread.start()
 
-        while not job_queue.empty():
-            self._read_notifications(notify_queue, True)
+        remaining_notifications = len(files_to_download) * 2
+
+        while remaining_notifications > 0:
+            remaining_notifications -= self._read_notifications(descriptions, notify_queue, True)
             self._waiter.sleep(1)
 
         job_queue.join()
@@ -348,26 +306,35 @@ class _LowLevelMultiThreadingFileDownloader(LowLevelFileDownloader):
         for thread in threads:
             thread.join()
 
-        self._read_notifications(notify_queue, False)
+        self._read_notifications(descriptions, notify_queue, False)
+        self._logger.print()
 
-    def _read_notifications(self, notify_queue, in_progress):
-        later = []
+    def _read_notifications(self, descriptions, notify_queue, in_progress):
         new_files = False
+        read_notifications = 0
         while not notify_queue.empty():
             state, path = notify_queue.get(False)
+            notify_queue.task_done()
+
             if state == 0:
                 if self._endl_pending:
                     self._endl_pending = False
                     self._logger.print()
                 self._logger.print(path, flush=True)
+
                 new_files = True
+            elif state == 1:
+                self._pending_notifications.append(self._download_validator.validate_download(path, descriptions[path]['hash']))
             else:
-                later.append((state, path))
+                self._pending_notifications.append((state, path))
 
-            notify_queue.task_done()
+            read_notifications += 1
 
-        if len(later) > 0:
-            for state, pack in later:
+        if new_files:
+            return read_notifications
+
+        if len(self._pending_notifications) > 0:
+            for state, pack in self._pending_notifications:
                 if state == 1:
                     path = pack
                     self._downloaded_files.append(path)
@@ -377,10 +344,12 @@ class _LowLevelMultiThreadingFileDownloader(LowLevelFileDownloader):
                     self._network_errors.add_debug_report(path, message)
                     self._logger.print('~', end='', flush=True)
 
-        elif not new_files and in_progress:
+        elif in_progress:
             self._logger.print('*', end='', flush=True)
 
-        self._endl_pending = len(later) > 0 or in_progress
+        self._endl_pending = in_progress
+        self._pending_notifications.clear()
+        return read_notifications
 
     def network_errors(self):
         return self._network_errors.list()
@@ -388,12 +357,13 @@ class _LowLevelMultiThreadingFileDownloader(LowLevelFileDownloader):
     def downloaded_files(self):
         return self._downloaded_files
 
-    def _thread_worker_q(self, job_queue, notify_queue):
+    def _thread_worker(self, job_queue, notify_queue):
         while not job_queue.empty():
-            description, path, target = job_queue.get(False)
+            url, path, target = job_queue.get(False)
+
             notify_queue.put((0, path), False)
             try:
-                with urlopen(description['url'], timeout=self._config[K_DOWNLOADER_TIMEOUT], context=self._context) as in_stream, open(target, 'wb') as out_file:
+                with urlopen(url, timeout=self._config[K_DOWNLOADER_TIMEOUT], context=self._context) as in_stream, open(target, 'wb') as out_file:
                     if in_stream.status == 200:
                         copyfileobj(in_stream, out_file)
                         notify_queue.put((1, path), False)
@@ -408,137 +378,6 @@ class _LowLevelMultiThreadingFileDownloader(LowLevelFileDownloader):
                 notify_queue.put((2, (path, 'Exception during download! %s: %s' % (path, str(e)))), False)
 
             job_queue.task_done()
-
-    def _thread_worker(self, description, path, target):
-        self._logger.print(path)
-        try:
-            with urlopen(description['url'], timeout=self._config[K_DOWNLOADER_TIMEOUT], context=self._context) as in_stream, open(target, 'wb') as out_file:
-                if in_stream.status == 200:
-                    copyfileobj(in_stream, out_file)
-                    self._downloaded_files.append(path)
-                else:
-                    self._network_errors.add_debug_report(path, 'Bad http status! %s: %s' % (path, in_stream.status))
-
-        except URLError as e:
-            self._network_errors.add_debug_report(path, 'HTTP error! %s: %s' % (path, e.reason))
-
-
-class _LowLevelMultiProcessingFileDownloaderFactory(LowLevelFileDownloaderFactory):
-    def __init__(self, config, waiter, logger):
-        self._config = config
-        self._waiter = waiter
-        self._logger = logger
-
-    def create_low_level_file_downloader(self):
-        return _LowLevelMultiProcessingFileDownloader(self._config, context_from_curl_ssl(self._config[K_CURL_SSL]), self._waiter, self._logger)
-
-
-class _LowLevelMultiProcessingFileDownloader(LowLevelFileDownloader):
-    def __init__(self, config, context, waiter, logger):
-        self._config = config
-        self._context = context
-        self._waiter = waiter
-        self._logger = logger
-        self._network_errors = _DownloadErrors(self._logger)
-        self._downloaded_files = []
-        self._endl_pending = False
-
-    def fetch(self, files_to_download):
-        job_queue = multiprocessing.Queue()
-        notify_queue = multiprocessing.Queue()
-
-        for description, path, target in files_to_download:
-            job_queue.put((description, path, target))
-
-        childs = [Process(target=_multiprocessing_worker, args=(job_queue, notify_queue, self._config[K_CURL_SSL], self._config[K_DOWNLOADER_TIMEOUT], idx), daemon=True) for idx in range(min(20, len(files_to_download)))]
-        for process in childs:
-            process.start()
-
-        activation = [True for _ in childs]
-
-        previous = time.time()
-
-        while any(activation):
-            now = time.time()
-            written = self._read_notifications(notify_queue, activation, now > previous + 5)
-            if written:
-                previous = now
-
-        for process in childs:
-            process.join()
-
-    def _read_notifications(self, notify_queue, activation, in_progress):
-        later = []
-        written = False
-        while not notify_queue.empty():
-            state, path = notify_queue.get()
-            if state == -1:
-                activation[path] = False
-            elif state == 0:
-                if self._endl_pending:
-                    self._endl_pending = False
-                    self._logger.print()
-                self._logger.print(path, flush=True)
-                written = True
-            else:
-                later.append((state, path))
-
-        if len(later) > 0:
-            for state, pack in later:
-                if state == 1:
-                    path = pack
-                    self._downloaded_files.append(path)
-                    self._logger.print('.', end='', flush=True)
-                else:
-                    path, message = pack
-                    self._network_errors.add_debug_report(path, message)
-                    self._logger.print('~', end='', flush=True)
-
-            written = True
-            self._endl_pending = True
-
-        elif not written and in_progress:
-            self._logger.print('*', end='', flush=True)
-            written = True
-            self._endl_pending = True
-
-        return written
-
-    def network_errors(self):
-        return self._network_errors.list()
-
-    def downloaded_files(self):
-        return self._downloaded_files
-
-
-def _multiprocessing_worker(job_queue, notify_queue, curl_ssl, timeout, idx):
-    #print('hello ' + str(idx))
-    context = context_from_curl_ssl(curl_ssl)
-    while not job_queue.empty():
-        try:
-            description, path, target = job_queue.get(block=False)
-        except queue.Empty:
-            continue
-
-        #print('not empty ' + str(idx))
-        notify_queue.put((0, path))
-        try:
-            with urlopen(description['url'], timeout=timeout, context=context) as in_stream, open(target, 'wb') as out_file:
-                if in_stream.status == 200:
-                    copyfileobj(in_stream, out_file)
-                    notify_queue.put((1, path))
-                else:
-                    notify_queue.put((2, (path, 'Bad http status! %s: %s' % (path, in_stream.status))))
-
-        except URLError as e:
-            notify_queue.put((2, (path, 'HTTP error! %s: %s' % (path, e.reason))))
-        except ConnectionResetError as e:
-            notify_queue.put((2, (path, 'Connection reset error! %s: %s' % (path, str(e)))))
-        except Exception as e:
-            notify_queue.put((2, (path, 'Exception during download! %s: %s' % (path, str(e)))))
-
-    #print('bye bye! ' + str(idx))
-    notify_queue.put((-1, idx))
 
 
 class CurlDownloaderAbstract(FileDownloader):
