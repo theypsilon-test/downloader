@@ -79,6 +79,12 @@ verbose = false
 
 Check the [CHANGELOG](CHANGELOG.md) for more information about past releases.
 
+### PC Launcher (for Windows, Mac, and Linux)
+
+With this different launcher you'll be able to install all MiSTer files without using a MiSTer. This is especially useful if your MiSTer can't access the internet.
+
+Learn how to use the *PC Launcher* [here](docs/pc-launcher.md). 
+
 ### Custom Download Filters
 
 With download filters, users will be able to opt-out from installing files that they don't want in their system, like for example, cheats or readme files.

@@ -9,5 +9,6 @@ if ! gh release list | grep -q "latest" ; then
 fi
 
 cd src
-zip "MiSTer_Downloader_PC_Launcher.zip" pc_launcher.py
+cp pc_launcher.py downloader_pc_launcher.py
+zip "MiSTer_Downloader_PC_Launcher.zip" downloader_pc_launcher.py
 gh release upload "latest" "MiSTer_Downloader_PC_Launcher.zip" --clobber
