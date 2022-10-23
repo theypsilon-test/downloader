@@ -11,7 +11,7 @@ temp_container = {}
 def fetch_temp_downloader():
     with NamedTemporaryFile(suffix='.zip', mode='wb', delete=False) as temp:
         temp_container['downloader'] = temp
-        with urlopen('https://github.com/theypsilon-test/ua2/releases/download/latest/downloader.zip') as in_stream:
+        with urlopen('https://github.com/theypsilon-test/downloader/releases/download/latest/downloader.zip') as in_stream:
             if in_stream.status == 200:
                 copyfileobj(in_stream, temp)
 
