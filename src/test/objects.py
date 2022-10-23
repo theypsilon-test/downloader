@@ -27,7 +27,7 @@ from downloader.constants import DISTRIBUTION_MISTER_DB_ID, DISTRIBUTION_MISTER_
     MEDIA_FAT, K_BASE_SYSTEM_PATH, K_CONFIG_PATH, K_ZIP_FILE_COUNT_THRESHOLD, K_STORAGE_PRIORITY, MEDIA_USB0, \
     MEDIA_USB1, \
     MEDIA_USB2, KENV_FAIL_ON_FILE_ERROR, KENV_UPDATE_LINUX, KENV_CURL_SSL, KENV_COMMIT, DEFAULT_CURL_SSL_OPTIONS, \
-    K_DEFAULT_DB_ID, MEDIA_USB3, KENV_LOGFILE
+    K_DEFAULT_DB_ID, MEDIA_USB3, KENV_LOGFILE, KENV_PC_LAUNCHER
 from downloader.db_options import DbOptions, DbOptionsKind
 from downloader.other import empty_store_without_base_path
 from test.fake_db_entity import DbEntity
@@ -617,7 +617,8 @@ def default_env():
         KENV_UPDATE_LINUX: 'true',
         KENV_FAIL_ON_FILE_ERROR: 'false',
         KENV_COMMIT: 'unknown',
-        KENV_LOGFILE: None
+        KENV_LOGFILE: None,
+        KENV_PC_LAUNCHER: None,
     }
 
 
